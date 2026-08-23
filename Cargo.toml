@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["qemer-core", "qemer-answer", "qemer-tui"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.91"
+
+[workspace.dependencies]
+qemer-core = { path = "qemer-core" }
+qemer-answer = { path = "qemer-answer" }

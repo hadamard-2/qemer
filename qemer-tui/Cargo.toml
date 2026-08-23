@@ -1,0 +1,15 @@
+[package]
+name = "qemer-tui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+futures = "0.3.34"
+qemer-answer = { version = "0.1.0", path = "../qemer-answer" }
+qemer-core = { version = "0.1.0", path = "../qemer-core" }
+ratatui = "0.30.2"
+tokio = { version = "1.53.1", features = ["full"] }

@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Local corpora and models are downloaded, never committed
+/corpora/
+/models/
+*.gguf
+*.lance/
