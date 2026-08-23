@@ -4,12 +4,14 @@
 //! This crate knows nothing about answer generation. Its only consumers'
 //! requirement is a query in and snippets out.
 
+pub mod cache;
 pub mod corpus;
 pub mod embed;
 pub mod fuse;
 pub mod schema;
 pub mod search;
 
+pub use cache::Cache;
 pub use corpus::{Corpus, CorpusRef, Manifest};
 pub use search::Snippet;
 

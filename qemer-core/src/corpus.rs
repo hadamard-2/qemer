@@ -37,7 +37,3 @@ pub async fn fetch_manifest(_url: &str) -> Result<Manifest> {
 pub async fn install(_reference: &CorpusRef) -> Result<Corpus> {
     todo!("download, verify sha256, unpack into the local corpus cache")
 }
-
-pub fn installed() -> Result<Vec<Corpus>> {
-    todo!("enumerate the local corpus cache")
-}
