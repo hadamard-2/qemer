@@ -3,7 +3,7 @@
 //! Qemer never installs or launches a model runtime. It talks HTTP to a server
 //! the user is already running, and reports clearly when one is not reachable.
 
-use crate::Result;
+use crate::{CoreError, Result};
 
 pub struct EmbedClient {
     pub base_url: String,
@@ -11,6 +11,34 @@ pub struct EmbedClient {
     /// `CoreError::ModelMismatch`.
     pub model: String,
     pub dim: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct EmbeddingResponse {
+    data: Vec<EmbeddingDatum>,
+}
+
+#[derive(serde::Deserialize)]
+struct EmbeddingDatum {
+    embedding: Vec<f32>,
+}
+
+/// Parse an OpenAI-shaped embeddings response and check its width.
+pub fn parse_embedding(body: &[u8], expected_dim: usize) -> Result<Vec<f32>> {
+    let parsed: EmbeddingResponse = serde_json::from_slice(body)
+        .map_err(|e| CoreError::Embed(format!("unexpected response body: {e}")))?;
+    let first = parsed
+        .data
+        .into_iter()
+        .next()
+        .ok_or_else(|| CoreError::Embed("response contained no embeddings".into()))?;
+    if first.embedding.len() != expected_dim {
+        return Err(CoreError::Embed(format!(
+            "expected {expected_dim} dimensions, received {}",
+            first.embedding.len()
+        )));
+    }
+    Ok(first.embedding)
 }
 
 impl EmbedClient {
@@ -30,8 +58,23 @@ impl EmbedClient {
         })
     }
 
-    pub async fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-        todo!("POST to {}/v1/embeddings", self.base_url)
+    pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let url = format!("{}/v1/embeddings", self.base_url.trim_end_matches('/'));
+        let response = reqwest::Client::new()
+            .post(&url)
+            .json(&serde_json::json!({ "input": text, "model": self.model }))
+            .send()
+            .await
+            .map_err(|e| {
+                // Names the URL and what was attempted. What the user should
+                // start is the caller's to say, not this crate's.
+                CoreError::Embed(format!("no embedding server reachable at {url}: {e}"))
+            })?;
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| CoreError::Embed(e.to_string()))?;
+        parse_embedding(&body, self.dim)
     }
 }
 
@@ -87,5 +130,27 @@ mod tests {
             text.contains("nomic-embed-text-v1.5"),
             "error must name the client model"
         );
+    }
+
+    #[test]
+    fn parses_an_openai_shaped_embedding_response() {
+        let body = br#"{"data":[{"embedding":[1.0,2.0,3.0],"index":0}]}"#;
+        assert_eq!(parse_embedding(body, 3).unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn a_wrong_dimension_is_an_error() {
+        let body = br#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#;
+        assert!(parse_embedding(body, 768).is_err());
+    }
+
+    #[test]
+    fn an_empty_data_array_is_an_error_not_a_panic() {
+        assert!(parse_embedding(br#"{"data":[]}"#, 768).is_err());
+    }
+
+    #[test]
+    fn a_non_embedding_body_is_an_error() {
+        assert!(parse_embedding(br#"{"error":"model not loaded"}"#, 768).is_err());
     }
 }
