@@ -54,6 +54,8 @@ Fusion is by reciprocal rank, not by combining scores. BM25 scores are unbounded
 
 **One FTS index per column.** `lancedb` 0.37.1 rejects composite indices outright ("Multi-column (composite) indices are not yet supported"). Each column in `schema::FTS_COLUMNS` gets its own index, and a query searches across them with `FullTextSearchQuery::with_columns`.
 
+**We fuse ourselves; `execute_hybrid` is not used.** lancedb 0.37.1 does expose a single-call hybrid (`VectorQuery::execute_hybrid`, which runs both searches and reranks with `RRFReranker`), so the earlier inference from `rerank_hybrid`'s signature was wrong on that point. It is still not what we want: it normalizes and fuses at the *row* level, and a corpus with a prose row and a code row per snippet would have one snippet vote twice. Each retriever is collapsed to distinct snippets first, and `fuse::rrf` combines the two snippet rankings.
+
 ## The corpus contract
 
 The only thing this repository and `qemer-ingest` share. Nothing beyond this should be assumed on either side.
@@ -108,7 +110,6 @@ Named here because they were assumed during design and not checked against a run
 
 - Whether `llama-server` requires, ignores, or rejects a per-request `model` field when a single model is loaded — this decides what the single-server deployment actually looks like in config docs.
 - Qwen3.5-0.8B's real context length, read from the model card or the `llama-server` startup log, not from memory.
-- Whether `lancedb` 0.37.1's Rust API exposes a single-call hybrid query type, or whether both searches must be run separately and passed to `rerank_hybrid`. The `rerank_hybrid(query, vector_results, fts_results)` signature implies the latter; this affects plumbing only, not the design.
 
 ## Not in scope
 

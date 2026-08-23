@@ -1,5 +1,8 @@
 //! Builds a small corpus table in a temp directory. Shared by retrieval tests.
 
+// Each test binary includes this module but uses only part of it.
+#![allow(dead_code)]
+
 use lancedb::arrow::arrow_array::{
     FixedSizeListArray, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
     types::Float32Type,
