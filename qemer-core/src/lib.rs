@@ -6,6 +6,7 @@
 
 pub mod corpus;
 pub mod embed;
+pub mod fuse;
 pub mod schema;
 pub mod search;
 
