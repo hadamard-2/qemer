@@ -6,6 +6,7 @@
 
 pub mod corpus;
 pub mod embed;
+pub mod schema;
 pub mod search;
 
 pub use corpus::{Corpus, CorpusRef, Manifest};

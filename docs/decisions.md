@@ -48,6 +48,12 @@ Fusion is by reciprocal rank, not by combining scores. BM25 scores are unbounded
 
 **Generation blocks input; Esc aborts.** A new query cannot be submitted while a stream is in flight, which means there is never a second stream and therefore nothing to interleave — no epoch counter or token-discarding logic is needed. Esc drops the in-flight request, so `llama-server` stops generating and the input line unlocks; without it there would be no way out of a bad answer from a small model, which is exactly the moment a user wants to retype.
 
+**FTS uses the `code` base tokenizer, not the default.** Observed with `lancedb::tokenize` against lancedb 0.37.1: the default `simple` tokenizer stems and splits on underscores, indexing `create_index` as `creat` + `index` and dropping the `to` in `nearest_to` as a stop word; camelCase is never split, so `FullTextSearchQuery` becomes one stemmed blob either way. The `code` tokenizer keeps `create_index` and `nearest_to` whole while still splitting prose on whitespace. The cost is that BM25 loses stemming, so `creates` no longer matches `create`. That is the right trade in a hybrid: matching across word forms is what the vector retriever is for, and exact identifier matching is the one thing only BM25 can do. Both sides read `schema::fts_index_params()`, because index-time and query-time tokenization must agree.
+
+**Arrow types come from `lancedb`'s re-exports, never a direct `arrow-*` dependency.** lancedb 0.37.1 depends on `arrow-array = "58.0.0"`. Declaring our own `arrow-array = "59.2.0"` put two versions in the graph, which is legal right up to the point a `RecordBatch` crosses into `create_table` and fails a trait bound on two identically named, incompatible types. Importing from `lancedb::arrow::*` makes the skew unrepresentable. `parquet` is not re-exported and must still be pinned by hand to match.
+
+**One FTS index per column.** `lancedb` 0.37.1 rejects composite indices outright ("Multi-column (composite) indices are not yet supported"). Each column in `schema::FTS_COLUMNS` gets its own index, and a query searches across them with `FullTextSearchQuery::with_columns`.
+
 ## The corpus contract
 
 The only thing this repository and `qemer-ingest` share. Nothing beyond this should be assumed on either side.
@@ -102,9 +108,7 @@ Named here because they were assumed during design and not checked against a run
 
 - Whether `llama-server` requires, ignores, or rejects a per-request `model` field when a single model is loaded — this decides what the single-server deployment actually looks like in config docs.
 - Qwen3.5-0.8B's real context length, read from the model card or the `llama-server` startup log, not from memory.
-- The shape of the LanceDB table-build and `create_index` APIs at install time. The crate is pinned at `lancedb = "0.37.1"`; the call signatures have not been exercised.
 - Whether `lancedb` 0.37.1's Rust API exposes a single-call hybrid query type, or whether both searches must be run separately and passed to `rerank_hybrid`. The `rerank_hybrid(query, vector_results, fts_results)` signature implies the latter; this affects plumbing only, not the design.
-- How the FTS tokenizer splits code identifiers — whether `create_fts_index` indexes as one term or as `create` / `fts` / `index`. This decides how well BM25 actually delivers the exact-identifier matching it is here to provide, and is worth testing against a real corpus early.
 
 ## Not in scope
 
