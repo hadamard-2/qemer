@@ -4,7 +4,7 @@
 //! The contract between the two is this manifest plus the tarball layout;
 //! nothing here should assume anything else about how ingestion works.
 
-use crate::Result;
+use crate::{CoreError, Result};
 
 /// Fetched from a known URL; lists what is available to download.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -30,10 +30,72 @@ pub struct Corpus {
     pub path: std::path::PathBuf,
 }
 
-pub async fn fetch_manifest(_url: &str) -> Result<Manifest> {
-    todo!("GET the manifest and deserialize")
+/// Parse a manifest. Kept separate from fetching so the parsing rules are
+/// testable without a network.
+pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
+    serde_json::from_slice(bytes).map_err(|e| CoreError::Manifest {
+        url: "<local>".into(),
+        reason: e.to_string(),
+    })
+}
+
+pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
+    let bytes = reqwest::get(url)
+        .await
+        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?
+        .error_for_status()
+        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?
+        .bytes()
+        .await
+        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?;
+    parse_manifest(&bytes).map_err(|e| CoreError::Manifest {
+        url: url.into(),
+        reason: e.to_string(),
+    })
 }
 
 pub async fn install(_reference: &CorpusRef) -> Result<Corpus> {
     todo!("download, verify sha256, unpack into the local corpus cache")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"{
+      "corpora": [{
+        "library": "lancedb",
+        "version": "0.37.1",
+        "url": "https://example/lancedb-0.37.1.tar.zst",
+        "sha256": "deadbeef",
+        "bytes": 15728640,
+        "embedding_model": "nomic-embed-text-v1.5",
+        "embedding_dim": 768,
+        "snippet_count": 4213
+      }]
+    }"#;
+
+    #[test]
+    fn parses_a_manifest() {
+        let m = parse_manifest(SAMPLE.as_bytes()).unwrap();
+        assert_eq!(m.corpora.len(), 1);
+        assert_eq!(m.corpora[0].library, "lancedb");
+        assert_eq!(m.corpora[0].embedding_dim, 768);
+    }
+
+    #[test]
+    fn an_empty_manifest_is_valid() {
+        let m = parse_manifest(br#"{"corpora": []}"#).unwrap();
+        assert!(m.corpora.is_empty());
+    }
+
+    #[test]
+    fn malformed_json_is_an_error_not_a_panic() {
+        assert!(parse_manifest(b"not json").is_err());
+    }
+
+    #[test]
+    fn a_missing_field_is_an_error() {
+        assert!(parse_manifest(br#"{"corpora":[{"library":"x"}]}"#).is_err());
+    }
 }

@@ -30,6 +30,8 @@ pub enum CoreError {
         client_model: String,
         client_dim: usize,
     },
+    #[error("manifest at {url} could not be read: {reason}")]
+    Manifest { url: String, reason: String },
     #[error("embedding request failed: {0}")]
     Embed(String),
     #[error(transparent)]
