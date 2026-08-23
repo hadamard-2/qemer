@@ -39,18 +39,21 @@ Nothing in this codebase should assume anything further about how ingestion work
 
 ## Design decisions
 
-Recorded here because they were settled in discussion rather than in a spec document, and the reasoning is not recoverable from the code.
-
-- **Library-scoped queries, not open search.** You choose a library, then ask. Routing a question across libraries is a genuinely separate hard problem, and mixing it in means a wrong answer could be a retrieval failure *or* a routing failure, with no way to tell which.
-- **Snippet-as-row, not fixed-size chunks.** Context7's curated markdown is already segmented into titled blocks with a source URL and usually one code block. Re-chunking by token window would discard exactly the curation that makes the corpus worth using.
-- **Split on `^### ` headings, not on the dash separators.** The dash runs between blocks are not reliable — observed output has consecutive blocks with no separator between them, so splitting on dashes silently fuses two snippets into one oversized row.
-- **Prose and code embedded separately.** Embedding a whole block lets code tokens dominate the vector, which general-purpose embedding models handle poorly.
-- **Prebuilt corpora, not local ingestion.** Users download vectors rather than computing them. The one-time embedding pass is the expensive part; query-time embedding is milliseconds.
-- **HTTP to `llama-server`, no bundled runtime.** GPU toolchains are the least portable thing in this stack. Keeping them outside the binary also means the TUI and a future MCP server point at the same endpoint.
+Settled decisions, the reasoning behind them, and — importantly — the questions still open are in [`docs/decisions.md`](docs/decisions.md). Several load-bearing choices are deliberately unresolved; check there before assuming one.
 
 ## Development
+
+Building requires `protoc` on PATH — `lance-encoding` compiles protobuf definitions in its build script. On Debian/Ubuntu:
+
+```sh
+sudo apt install protobuf-compiler
+```
+
+Then:
 
 ```sh
 cargo build
 cargo test
 ```
+
+The first build compiles datafusion and takes several minutes.
