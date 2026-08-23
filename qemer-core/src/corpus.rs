@@ -58,6 +58,20 @@ pub async fn install(_reference: &CorpusRef) -> Result<Corpus> {
     todo!("download, verify sha256, unpack into the local corpus cache")
 }
 
+/// Verify a downloaded tarball against the manifest's digest.
+pub fn verify_sha256(bytes: &[u8], expected: &str) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(CoreError::ChecksumMismatch {
+            expected: expected.to_string(),
+            actual,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +111,28 @@ mod tests {
     #[test]
     fn a_missing_field_is_an_error() {
         assert!(parse_manifest(br#"{"corpora":[{"library":"x"}]}"#).is_err());
+    }
+
+    const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn verifies_a_correct_checksum() {
+        assert!(verify_sha256(b"abc", ABC_SHA).is_ok());
+    }
+
+    #[test]
+    fn verifies_the_empty_input() {
+        assert!(verify_sha256(b"", EMPTY_SHA).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_wrong_checksum() {
+        assert!(verify_sha256(b"abc", EMPTY_SHA).is_err());
+    }
+
+    #[test]
+    fn checksum_comparison_ignores_case() {
+        assert!(verify_sha256(b"abc", &ABC_SHA.to_uppercase()).is_ok());
     }
 }

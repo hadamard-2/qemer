@@ -32,6 +32,8 @@ pub enum CoreError {
     },
     #[error("manifest at {url} could not be read: {reason}")]
     Manifest { url: String, reason: String },
+    #[error("corpus download failed checksum: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
     #[error("embedding request failed: {0}")]
     Embed(String),
     #[error(transparent)]
