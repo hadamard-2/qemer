@@ -2,21 +2,20 @@
 
 use crate::Result;
 
-/// One documentation snippet, mirroring the block structure of Context7's
-/// curated markdown: a heading, a source URL, prose, and usually one code
-/// block.
+/// One documentation snippet, reassembled from its prose and code rows.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Snippet {
     pub library: String,
     pub version: String,
+    pub snippet_id: String,
     pub title: String,
     pub description: String,
-    /// Absent for description-only blocks, which Context7 does emit.
+    /// Absent for description-only blocks, which the corpus does contain.
     pub code: Option<String>,
-    pub language: Option<String>,
     pub source_url: Option<String>,
-    /// Cosine distance from the query; lower is closer.
-    pub distance: f32,
+    /// Reciprocal-rank-fusion score. Higher is better. Not a distance, and
+    /// not comparable across queries.
+    pub score: f32,
 }
 
 /// Search a single library's corpus. Library scoping is deliberate: routing a
