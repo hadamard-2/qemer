@@ -54,8 +54,76 @@ pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
     })
 }
 
-pub async fn install(_reference: &CorpusRef) -> Result<Corpus> {
-    todo!("download, verify sha256, unpack into the local corpus cache")
+/// Read Parquet rows and write them into a new LanceDB table with its FTS
+/// indices. The directory is created fresh; callers rename it into place.
+pub async fn build_table_from_parquet(
+    db_dir: &std::path::Path,
+    parquet: &std::path::Path,
+) -> Result<()> {
+    use crate::schema::{FTS_COLUMNS, fts_index_params};
+    use lancedb::arrow::arrow_array::RecordBatchReader;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    std::fs::create_dir_all(db_dir)?;
+    let file = std::fs::File::open(parquet)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| CoreError::Io(std::io::Error::other(e)))?
+        .build()
+        .map_err(|e| CoreError::Io(std::io::Error::other(e)))?;
+
+    let db = lancedb::connect(db_dir.to_str().unwrap()).execute().await?;
+    // ParquetRecordBatchReader is already a RecordBatchReader, so batches
+    // stream into the table rather than being collected first.
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(reader);
+    let table = db.create_table("snippets", reader).execute().await?;
+    for column in FTS_COLUMNS {
+        table
+            .create_index(&[column], lancedb::index::Index::FTS(fts_index_params()))
+            .execute()
+            .await?;
+    }
+    Ok(())
+}
+
+/// Download, verify, unpack, build, and atomically move into the cache.
+///
+/// The table is built in a sibling temp directory and renamed last, so an
+/// interrupted install leaves nothing behind for `Cache::installed` to find.
+pub async fn install(cache: &crate::Cache, reference: &CorpusRef) -> Result<Corpus> {
+    let final_dir = cache.dir_for(&reference.library, &reference.version);
+    if final_dir.exists() {
+        let existing = crate::Cache::read_meta(&final_dir)?;
+        return Ok(Corpus { reference: existing, path: final_dir });
+    }
+    std::fs::create_dir_all(&cache.root)?;
+
+    let fetch_failed = |e: reqwest::Error| CoreError::Download {
+        url: reference.url.clone(),
+        reason: e.to_string(),
+    };
+    let bytes = reqwest::get(&reference.url)
+        .await
+        .map_err(fetch_failed)?
+        .error_for_status()
+        .map_err(fetch_failed)?
+        .bytes()
+        .await
+        .map_err(fetch_failed)?;
+    verify_sha256(&bytes, &reference.sha256)?;
+
+    // Staged inside the cache root so the final rename stays on one
+    // filesystem; a rename across mount points fails.
+    let staging = tempfile::tempdir_in(&cache.root)?;
+    let decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(&bytes[..]))?;
+    tar::Archive::new(decoder).unpack(staging.path())?;
+
+    let parquet = staging.path().join("corpus.parquet");
+    let db_dir = staging.path().join("db");
+    build_table_from_parquet(&db_dir, &parquet).await?;
+
+    std::fs::rename(&db_dir, &final_dir)?;
+    cache.write_meta(&final_dir, reference)?;
+    Ok(Corpus { reference: reference.clone(), path: final_dir })
 }
 
 /// Verify a downloaded tarball against the manifest's digest.

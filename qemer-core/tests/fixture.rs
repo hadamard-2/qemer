@@ -135,6 +135,15 @@ async fn bm25_matches_a_literal_snake_case_identifier() {
     );
 }
 
+pub fn write_fixture_parquet(path: &std::path::Path) {
+    use parquet::arrow::ArrowWriter;
+    let file = std::fs::File::create(path).unwrap();
+    let batch = batch(filler_vectors());
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 /// The reason for the `code` base tokenizer, pinned as a test so a change to
 /// `fts_index_params` that silently restores stemming fails here.
 #[test]
