@@ -2,6 +2,7 @@
 
 mod cli;
 mod config;
+mod query;
 
 use clap::Parser;
 use color_eyre::Result;
