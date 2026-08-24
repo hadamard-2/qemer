@@ -4,6 +4,7 @@ mod app;
 mod cli;
 mod config;
 mod query;
+mod view;
 
 use clap::Parser;
 use color_eyre::Result;
