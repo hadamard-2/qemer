@@ -8,6 +8,7 @@ mod view;
 
 use clap::Parser;
 use color_eyre::Result;
+use qemer_core::Cache;
 
 #[derive(Debug, clap::Parser)]
 #[command(name = "qemer", about = "Offline coding help grounded in documentation")]
@@ -19,18 +20,30 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+    // Parsed before the config is read, so `--help` and `--version` work on a
+    // machine that has never been configured.
     let args = Args::parse();
-
-    // Configuration is read before anything touches the terminal, so a
-    // validation failure lands on an ordinary screen the user can read.
     let config = config::load()?;
 
     match args.command {
-        Some(cli::Command::Install { target }) => cli::install(&config, &target).await,
-        Some(cli::Command::List) => cli::list(&config),
-        None => {
-            println!("qemer: TUI not wired up yet");
-            Ok(())
-        }
+        Some(cli::Command::Install { target }) => return cli::install(&config, &target).await,
+        Some(cli::Command::List) => return cli::list(&config),
+        None => {}
     }
+
+    let cache = Cache::new(Cache::default_root()?);
+    let corpora = cache.installed()?;
+
+    // Restore the terminal even on a panic. Without this, a crash leaves the
+    // shell in raw mode with no echo, which looks like a hung machine.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        hook(info);
+    }));
+
+    let mut terminal = ratatui::init();
+    let outcome = app::run(&mut terminal, &config, corpora).await;
+    ratatui::restore();
+    outcome
 }

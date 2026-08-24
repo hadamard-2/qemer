@@ -94,12 +94,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Enter => {
-                if self.selected_corpus().is_some() {
-                    self.screen = Screen::Query;
-                    self.reset_answer();
-                    self.input.clear();
-                }
+            KeyCode::Enter if self.selected_corpus().is_some() => {
+                self.screen = Screen::Query;
+                self.reset_answer();
+                self.input.clear();
             }
             _ => {}
         }
@@ -170,6 +168,97 @@ impl App {
                 self.status = Status::Idle;
             }
         }
+    }
+}
+
+use crate::config::Config;
+use crate::{query, view};
+use color_eyre::Result;
+use futures::StreamExt;
+use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{Event, EventStream};
+
+/// One live query. Boxing erases the async-stream's concrete type, and `Send`
+/// because the tokio runtime may move futures between worker threads.
+type QueryStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = Result<QueryEvent, QueryError>> + Send>>;
+
+/// Run until the user quits.
+///
+/// The whole query lives in one `Option<Stream>`. Aborting is setting it to
+/// `None`: the drop closes the connection, which stops the server generating
+/// and unlocks the input line. That is the entire cancellation story, and it
+/// is why no abort API was needed from either library crate.
+pub async fn run(
+    terminal: &mut DefaultTerminal,
+    config: &Config,
+    corpora: Vec<Corpus>,
+) -> Result<()> {
+    let mut app = App::new(corpora);
+    let mut keys = EventStream::new();
+    let mut running: Option<QueryStream> = None;
+
+    loop {
+        terminal.draw(|frame| view::draw(frame, &app))?;
+
+        let action = if let Some(stream) = running.as_mut() {
+            tokio::select! {
+                event = keys.next() => handle_terminal_event(&mut app, event),
+                item = stream.next() => {
+                    match item {
+                        Some(item) => {
+                            app.apply(item);
+                            Action::None
+                        }
+                        // The stream ended on its own; there is nothing left
+                        // to hold.
+                        None => {
+                            running = None;
+                            Action::None
+                        }
+                    }
+                }
+            }
+        } else {
+            let event = keys.next().await;
+            handle_terminal_event(&mut app, event)
+        };
+
+        match action {
+            Action::Quit => return Ok(()),
+            Action::Abort => running = None,
+            Action::StartQuery(text) => {
+                let Some(corpus) = app.selected_corpus() else {
+                    continue;
+                };
+                // Cloned so the stream owns everything and borrows no part of
+                // `app`, which the loop keeps mutating.
+                let corpus = Corpus {
+                    reference: corpus.reference.clone(),
+                    path: corpus.path.clone(),
+                };
+                running = Some(Box::pin(query::run(
+                    corpus,
+                    config.embed_client(),
+                    config.generator(),
+                    text,
+                    config.retrieval.k,
+                )));
+            }
+            Action::None => {}
+        }
+    }
+}
+
+fn handle_terminal_event(
+    app: &mut App,
+    event: Option<std::io::Result<Event>>,
+) -> Action {
+    match event {
+        Some(Ok(Event::Key(key))) if key.is_press() => app.handle_key(key),
+        // A closed terminal event stream means the terminal went away.
+        None => Action::Quit,
+        _ => Action::None,
     }
 }
 
