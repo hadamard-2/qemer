@@ -8,8 +8,12 @@ rust-version.workspace = true
 [dependencies]
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
+directories = "6"
 futures = "0.3.34"
 qemer-answer = { version = "0.1.0", path = "../qemer-answer" }
 qemer-core = { version = "0.1.0", path = "../qemer-core" }
 ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
+toml = "0.9"

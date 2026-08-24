@@ -1,5 +1,7 @@
 //! Qemer TUI: pick a library, ask a question, read the sources and the answer.
 
+mod config;
+
 use color_eyre::Result;
 
 #[tokio::main]
