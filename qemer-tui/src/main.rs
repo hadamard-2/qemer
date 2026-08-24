@@ -1,5 +1,6 @@
 //! Qemer TUI: pick a library, ask a question, read the sources and the answer.
 
+mod app;
 mod cli;
 mod config;
 mod query;
