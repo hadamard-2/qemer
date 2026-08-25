@@ -1,4 +1,5 @@
 /target
+/tools/qemer-demo-ingest/target/
 **/*.rs.bk
 *.pdb
 
