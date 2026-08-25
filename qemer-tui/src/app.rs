@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Screen {
     Picker,
     Query,
+    Excerpt,
 }
 
 /// Where a query has got to. `Searching` and `Streaming` both block input.
@@ -46,6 +47,7 @@ pub struct App {
     pub input: String,
     pub answer: String,
     pub sources: Vec<Snippet>,
+    pub selected_source: usize,
     pub status: Status,
     pub error: Option<String>,
 }
@@ -59,6 +61,7 @@ impl App {
             input: String::new(),
             answer: String::new(),
             sources: Vec::new(),
+            selected_source: 0,
             status: Status::Idle,
             error: None,
         }
@@ -81,6 +84,7 @@ impl App {
         match self.screen {
             Screen::Picker => self.handle_picker_key(key),
             Screen::Query => self.handle_query_key(key),
+            Screen::Excerpt => self.handle_excerpt_key(key),
         }
     }
 
@@ -119,11 +123,22 @@ impl App {
             return Action::None;
         }
         match key.code {
+            KeyCode::Up if !self.sources.is_empty() => {
+                self.selected_source = self.selected_source.saturating_sub(1);
+            }
+            KeyCode::Down if !self.sources.is_empty() => {
+                let last = self.sources.len().saturating_sub(1);
+                self.selected_source = (self.selected_source + 1).min(last);
+            }
             KeyCode::Char(c) => self.input.push(c),
             KeyCode::Backspace => {
                 self.input.pop();
             }
             KeyCode::Enter => {
+                if self.input.is_empty() && !self.sources.is_empty() {
+                    self.screen = Screen::Excerpt;
+                    return Action::None;
+                }
                 let query = self.input.trim().to_string();
                 if query.is_empty() {
                     return Action::None;
@@ -137,10 +152,26 @@ impl App {
         Action::None
     }
 
+    fn handle_excerpt_key(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => self.screen = Screen::Query,
+            KeyCode::Up if !self.sources.is_empty() => {
+                self.selected_source = self.selected_source.saturating_sub(1);
+            }
+            KeyCode::Down if !self.sources.is_empty() => {
+                let last = self.sources.len().saturating_sub(1);
+                self.selected_source = (self.selected_source + 1).min(last);
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
     /// One live answer at a time: asking again replaces what was there.
     fn reset_answer(&mut self) {
         self.answer.clear();
         self.sources.clear();
+        self.selected_source = 0;
         self.error = None;
         self.status = Status::Idle;
     }
@@ -151,14 +182,22 @@ impl App {
             Ok(QueryEvent::Searching) => self.status = Status::Searching,
             Ok(QueryEvent::Snippets(snippets)) => {
                 self.sources = snippets;
+                self.selected_source = 0;
                 self.status = Status::Streaming;
             }
             Ok(QueryEvent::Token(text)) => {
                 self.status = Status::Streaming;
                 self.answer.push_str(&text);
             }
-            Ok(QueryEvent::Done { prompt_tokens, completion_tokens }) => {
-                self.status = Status::Done { prompt_tokens, completion_tokens };
+            Ok(QueryEvent::Done {
+                prompt_tokens,
+                completion_tokens,
+            }) => {
+                self.status = Status::Done {
+                    prompt_tokens,
+                    completion_tokens,
+                };
+                self.input.clear();
             }
             Err(error) => {
                 // Idle rather than Done: a failure must unlock the input line
@@ -250,10 +289,7 @@ pub async fn run(
     }
 }
 
-fn handle_terminal_event(
-    app: &mut App,
-    event: Option<std::io::Result<Event>>,
-) -> Action {
+fn handle_terminal_event(app: &mut App, event: Option<std::io::Result<Event>>) -> Action {
     match event {
         Some(Ok(Event::Key(key))) if key.is_press() => app.handle_key(key),
         // A closed terminal event stream means the terminal went away.
@@ -297,6 +333,19 @@ mod tests {
         app.handle_key(key(KeyCode::Enter));
         assert!(matches!(app.screen, Screen::Query));
         app
+    }
+
+    fn a_snippet(title: &str) -> Snippet {
+        Snippet {
+            library: "alpha".into(),
+            version: "0.1.0".into(),
+            snippet_id: title.into(),
+            title: title.into(),
+            description: format!("Details for {title}."),
+            code: Some(format!("{title}()")),
+            source_url: Some("https://example.invalid/source".into()),
+            score: 1.0,
+        }
     }
 
     #[test]
@@ -345,7 +394,10 @@ mod tests {
     #[test]
     fn quitting_from_the_picker_is_requested_not_performed() {
         let mut app = an_app();
-        assert!(matches!(app.handle_key(key(KeyCode::Char('q'))), Action::Quit));
+        assert!(matches!(
+            app.handle_key(key(KeyCode::Char('q'))),
+            Action::Quit
+        ));
     }
 
     #[test]
@@ -400,7 +452,10 @@ mod tests {
         let mut app = on_query_screen();
         app.status = Status::Streaming;
         assert!(matches!(app.handle_key(key(KeyCode::Esc)), Action::Abort));
-        assert!(matches!(app.screen, Screen::Query), "abort does not navigate");
+        assert!(
+            matches!(app.screen, Screen::Query),
+            "abort does not navigate"
+        );
     }
 
     #[test]
@@ -440,16 +495,71 @@ mod tests {
         app.apply(Ok(QueryEvent::Token("Call ".into())));
         app.apply(Ok(QueryEvent::Token("search".into())));
         assert_eq!(app.answer, "Call search");
-        app.apply(Ok(QueryEvent::Done { prompt_tokens: 44, completion_tokens: 3 }));
+        app.apply(Ok(QueryEvent::Done {
+            prompt_tokens: 44,
+            completion_tokens: 3,
+        }));
         assert!(!app.is_busy(), "a finished query unlocks the input line");
+    }
+
+    #[test]
+    fn streamed_tokens_become_the_visible_answer() {
+        let mut app = on_query_screen();
+        app.apply(Ok(QueryEvent::Snippets(vec![])));
+        app.apply(Ok(QueryEvent::Token("Use ".into())));
+        app.apply(Ok(QueryEvent::Token("np.zeros".into())));
+        assert_eq!(app.answer, "Use np.zeros");
+    }
+
+    #[test]
+    fn opening_an_excerpt_and_escaping_returns_to_the_answer() {
+        let mut app = on_query_screen();
+        app.answer = "Generated answer".into();
+        app.apply(Ok(QueryEvent::Snippets(vec![a_snippet("Example")])));
+        app.apply(Ok(QueryEvent::Done {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+        }));
+
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.screen, Screen::Excerpt));
+
+        app.handle_key(key(KeyCode::Esc));
+        assert!(matches!(app.screen, Screen::Query));
+        assert_eq!(app.answer, "Generated answer");
+    }
+
+    #[test]
+    fn excerpt_selection_stays_within_the_retrieved_sources() {
+        let mut app = on_query_screen();
+        app.apply(Ok(QueryEvent::Snippets(vec![
+            a_snippet("First"),
+            a_snippet("Second"),
+        ])));
+        app.apply(Ok(QueryEvent::Done {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+        }));
+
+        app.handle_key(key(KeyCode::Down));
+        app.handle_key(key(KeyCode::Down));
+        assert_eq!(app.selected_source, 1);
+        app.handle_key(key(KeyCode::Up));
+        app.handle_key(key(KeyCode::Up));
+        assert_eq!(app.selected_source, 0);
     }
 
     #[test]
     fn a_failed_query_shows_the_message_and_unlocks_the_input_line() {
         let mut app = on_query_screen();
         app.apply(Ok(QueryEvent::Searching));
-        app.apply(Err(QueryError::Retrieval("embedding server is down".into())));
+        app.apply(Err(QueryError::Retrieval(
+            "embedding server is down".into(),
+        )));
         assert_eq!(app.error.as_deref(), Some("embedding server is down"));
-        assert!(!app.is_busy(), "a failure must not leave the interface stuck");
+        assert!(
+            !app.is_busy(),
+            "a failure must not leave the interface stuck"
+        );
     }
 }
