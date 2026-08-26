@@ -12,7 +12,9 @@ Settled in discussion rather than in a spec document. Recorded here because the 
 
 **Prose and code embedded separately.** Embedding a whole block lets code tokens dominate the vector, which general-purpose embedding models handle poorly. `code` is nullable — Context7 emits description-only blocks, and they are worth keeping for conceptual queries.
 
-**Prebuilt corpora, not local ingestion.** Users download vectors rather than computing them. The one-time corpus embedding pass is the expensive part; query-time embedding is milliseconds. Corpora are hosted on Cloudflare R2, with GitHub Releases as the fallback if R2 proves painful.
+**Prebuilt corpora, not local ingestion.** Qemer imports prebuilt artifacts from an explicit local or HTTPS manifest source rather than computing vectors. The one-time corpus embedding pass is the expensive part; query-time embedding is milliseconds.
+
+**Manifest identity is `(library, version)`.** A manifest cannot list the same library and version more than once. Artifact URLs may be relative to the manifest source, but the client resolves and validates them before installation.
 
 **HTTP to `llama-server`, no bundled runtime.** GPU toolchains are the least portable part of this stack, so they stay outside the binary. This also means the TUI and a future MCP server point at an endpoint the user runs rather than each managing a process.
 
@@ -98,8 +100,6 @@ A block with no code contributes one row. Nothing beyond this table and the mani
 
 Unresolved. **Ask rather than assume** — each of these has more than one defensible answer, and picking one silently is the specific failure this document exists to prevent.
 
-- **Corpus browsing and install flow.** Which libraries exist is `qemer-ingest`'s output, surfaced through the manifest; this repository's job is to let the user find and pull what they want. The interaction — how the manifest list is presented, filtered, and searched, what an install looks like mid-download, how versions are shown when several exist for one library — is not designed.
-- **Version selection.** The manifest keys corpora by library *and* version. Whether the user pins a version, always gets the newest, or is told when a newer one exists is undecided, and it interacts with cache eviction.
 - **Cache eviction.** Nothing decides when a downloaded corpus is removed, or whether that is ever automatic.
 - **Token budget default.** `k = 5` is settled as a retrieval hint, but the budget it feeds is not chosen, and it depends on a context length that must be read from the model rather than assumed.
 - **Failure surface for a missing `llama-server`.** Settled that Qemer says what to start. The two endpoints can be down independently, and what each message says is not written.
@@ -113,4 +113,4 @@ Named here because they were assumed during design and not checked against a run
 
 ## Not in scope
 
-Documentation scraping, corpus building, and publishing all live in `qemer-ingest` — including which libraries have corpora at all. This repository does not choose a library set; it consumes whatever the manifest lists. Auto-installing or launching llama.cpp is not planned. Cross-library query routing is deferred, not rejected.
+Documentation scraping, corpus building, and publishing all live in `qemer-ingest` — including which libraries have corpora at all. This repository does not choose a library set; it consumes whatever the manifest lists. Catalog browsing, corpus update policy, and artifact hosting are out of scope. Auto-installing or launching llama.cpp is not planned. Cross-library query routing is deferred, not rejected.

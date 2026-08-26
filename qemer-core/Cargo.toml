@@ -19,4 +19,5 @@ tar = "0.4"
 tempfile = "3"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
+url = "2"
 zstd = "0.13"

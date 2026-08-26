@@ -4,7 +4,86 @@
 //! The contract between the two is this manifest plus the tarball layout;
 //! nothing here should assume anything else about how ingestion works.
 
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
+
 use crate::{CoreError, Result};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManifestSource {
+    File(PathBuf),
+    Https(url::Url),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ArtifactSource {
+    File(PathBuf),
+    Https(url::Url),
+}
+
+impl ManifestSource {
+    fn parse(source: &str) -> Result<Self> {
+        match url::Url::parse(source) {
+            Ok(url) if url.scheme() == "https" && url.has_host() => Ok(Self::Https(url)),
+            Ok(url) => Err(manifest_error(
+                source,
+                format!("unsupported manifest source scheme `{}`", url.scheme()),
+            )),
+            Err(url::ParseError::RelativeUrlWithoutBase) => std::path::absolute(source)
+                .map(Self::File)
+                .map_err(|e| manifest_error(source, e.to_string())),
+            Err(e) => Err(manifest_error(source, e.to_string())),
+        }
+    }
+
+    fn resolve_artifact(&self, artifact: &str) -> Result<ArtifactSource> {
+        match url::Url::parse(artifact) {
+            Ok(url) if url.scheme() == "https" && url.has_host() => Ok(ArtifactSource::Https(url)),
+            Ok(url) => Err(manifest_error(
+                artifact,
+                format!("unsupported artifact source scheme `{}`", url.scheme()),
+            )),
+            Err(url::ParseError::RelativeUrlWithoutBase) => {
+                let path = Path::new(artifact);
+                if path.is_absolute() {
+                    return Ok(ArtifactSource::File(path.to_path_buf()));
+                }
+
+                match self {
+                    Self::File(manifest) => Ok(ArtifactSource::File(
+                        manifest
+                            .parent()
+                            .unwrap_or_else(|| Path::new(""))
+                            .join(path),
+                    )),
+                    Self::Https(manifest) => manifest
+                        .join(artifact)
+                        .map(ArtifactSource::Https)
+                        .map_err(|e| manifest_error(artifact, e.to_string())),
+                }
+            }
+            Err(e) => Err(manifest_error(artifact, e.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for ArtifactSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Https(url) => write!(f, "{url}"),
+        }
+    }
+}
+
+fn manifest_error(source: &str, reason: impl Into<String>) -> CoreError {
+    CoreError::Manifest {
+        url: source.into(),
+        reason: reason.into(),
+    }
+}
 
 /// Fetched from a known URL; lists what is available to download.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,10 +112,36 @@ pub struct Corpus {
 /// Parse a manifest. Kept separate from fetching so the parsing rules are
 /// testable without a network.
 pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
-    serde_json::from_slice(bytes).map_err(|e| CoreError::Manifest {
+    let manifest = serde_json::from_slice(bytes).map_err(|e| CoreError::Manifest {
         url: "<local>".into(),
         reason: e.to_string(),
-    })
+    })?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+fn validate_manifest(manifest: &Manifest) -> Result<()> {
+    let mut identities = HashSet::new();
+    for corpus in &manifest.corpora {
+        if !identities.insert((&corpus.library, &corpus.version)) {
+            return Err(manifest_error(
+                "<local>",
+                format!(
+                    "duplicate corpus identity {}@{}",
+                    corpus.library, corpus.version
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn find_corpus(manifest: Manifest, library: &str, version: &str) -> Result<CorpusRef> {
+    manifest
+        .corpora
+        .into_iter()
+        .find(|corpus| corpus.library == library && corpus.version == version)
+        .ok_or_else(|| CoreError::CorpusMissing(format!("{library}@{version}")))
 }
 
 pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
@@ -179,6 +284,57 @@ mod tests {
     #[test]
     fn a_missing_field_is_an_error() {
         assert!(parse_manifest(br#"{"corpora":[{"library":"x"}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_relative_artifact_resolves_beside_a_local_manifest() {
+        let source = ManifestSource::parse("/tmp/corpora/manifest.json").unwrap();
+        let resolved = source.resolve_artifact("numpy-2.3.0.tar.zst").unwrap();
+        assert_eq!(
+            resolved,
+            ArtifactSource::File("/tmp/corpora/numpy-2.3.0.tar.zst".into())
+        );
+    }
+
+    #[test]
+    fn a_relative_artifact_resolves_against_an_https_manifest() {
+        let source = ManifestSource::parse("https://host.example/releases/manifest.json").unwrap();
+        let resolved = source.resolve_artifact("numpy-2.3.0.tar.zst").unwrap();
+        assert_eq!(
+            resolved.to_string(),
+            "https://host.example/releases/numpy-2.3.0.tar.zst"
+        );
+    }
+
+    #[test]
+    fn a_manifest_with_the_same_library_and_version_twice_is_rejected() {
+        let text = br#"{"corpora":[
+          {"library":"numpy","version":"2.2","url":"a.tar.zst","sha256":"a","bytes":1,"embedding_model":"nomic","embedding_dim":768,"snippet_count":1},
+          {"library":"numpy","version":"2.2","url":"b.tar.zst","sha256":"b","bytes":1,"embedding_model":"nomic","embedding_dim":768,"snippet_count":1}
+        ]}"#;
+        assert!(parse_manifest(text).is_err());
+    }
+
+    #[test]
+    fn a_manifest_with_multiple_versions_of_one_library_is_valid() {
+        let text = br#"{"corpora":[
+          {"library":"numpy","version":"2.2","url":"a.tar.zst","sha256":"a","bytes":1,"embedding_model":"nomic","embedding_dim":768,"snippet_count":1},
+          {"library":"numpy","version":"2.3","url":"b.tar.zst","sha256":"b","bytes":1,"embedding_model":"nomic","embedding_dim":768,"snippet_count":1}
+        ]}"#;
+        assert!(parse_manifest(text).is_ok());
+    }
+
+    #[test]
+    fn find_corpus_matches_both_library_and_version() {
+        let manifest = parse_manifest(SAMPLE.as_bytes()).unwrap();
+        let corpus = find_corpus(manifest, "lancedb", "0.37.1").unwrap();
+        assert_eq!(corpus.library, "lancedb");
+        assert_eq!(corpus.version, "0.37.1");
+    }
+
+    #[test]
+    fn a_non_https_remote_manifest_is_rejected() {
+        assert!(ManifestSource::parse("ftp://host.example/manifest.json").is_err());
     }
 
     const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
