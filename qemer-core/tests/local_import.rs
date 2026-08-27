@@ -91,7 +91,14 @@ async fn reports_the_missing_relative_artifact_path() {
 #[tokio::test]
 async fn rejects_a_local_artifact_with_the_wrong_advertised_size_before_unpacking() {
     let source = tempfile::tempdir().unwrap();
-    let (_, sha256, bytes) = write_artifact(source.path());
+    let artifact = source.path().join("numpy-2.3.0.tar.zst");
+    let artifact_bytes = b"not a zstd-compressed tar archive";
+    std::fs::write(&artifact, artifact_bytes).unwrap();
+    let sha256 = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(artifact_bytes))
+    };
+    let bytes = artifact_bytes.len() as u64;
     let manifest_path = write_manifest(source.path(), "numpy-2.3.0.tar.zst", &sha256, bytes + 1);
     let cache_dir = tempfile::tempdir().unwrap();
     let cache = qemer_core::Cache::new(cache_dir.path().to_path_buf());
