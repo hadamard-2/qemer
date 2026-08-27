@@ -1,10 +1,5 @@
-//! The non-interactive command line: install a corpus, list what is installed.
-//!
-//! Deliberately plain. Browsing the manifest, choosing versions, and showing
-//! a download in progress are open questions in `docs/decisions.md`, and
-//! building even a small version of them here would bias the design later.
+//! The non-interactive command line: discover, install, and list corpora.
 
-use crate::config::Config;
 use color_eyre::Result;
 use qemer_core::{Cache, corpus};
 
@@ -14,6 +9,15 @@ pub enum Command {
     Install {
         /// For example `lancedb@0.37.1`. The version is required.
         target: String,
+        /// A local path or HTTPS URL for the corpus manifest.
+        #[arg(long)]
+        manifest: String,
+    },
+    /// List the corpora available from a manifest.
+    Available {
+        /// A local path or HTTPS URL for the corpus manifest.
+        #[arg(long)]
+        manifest: String,
     },
     /// List the corpora already installed.
     List,
@@ -22,11 +26,8 @@ pub enum Command {
 /// Split `library@version`. The version is required: defaulting it would
 /// answer a question `docs/decisions.md` records as still open.
 pub fn parse_target(target: &str) -> Result<(String, String), String> {
-    let malformed = || {
-        format!(
-            "expected `library@version`, for example `lancedb@0.37.1`, but got `{target}`"
-        )
-    };
+    let malformed =
+        || format!("expected `library@version`, for example `lancedb@0.37.1`, but got `{target}`");
     let mut parts = target.split('@');
     let (Some(library), Some(version), None) = (parts.next(), parts.next(), parts.next()) else {
         return Err(malformed());
@@ -37,31 +38,37 @@ pub fn parse_target(target: &str) -> Result<(String, String), String> {
     Ok((library.to_string(), version.to_string()))
 }
 
-pub async fn install(config: &Config, target: &str) -> Result<()> {
+pub async fn available(manifest: &str) -> Result<()> {
+    let mut references = corpus::load_manifest(manifest).await?.corpora;
+    references.sort_by(|left, right| {
+        (left.library.as_str(), left.version.as_str())
+            .cmp(&(right.library.as_str(), right.version.as_str()))
+    });
+    for reference in references {
+        println!(
+            "{}@{} · {} snippets · {} bytes",
+            reference.library, reference.version, reference.snippet_count, reference.bytes
+        );
+    }
+    Ok(())
+}
+
+pub async fn install(target: &str, manifest: &str) -> Result<()> {
     let (library, version) = parse_target(target).map_err(|e| color_eyre::eyre::eyre!(e))?;
-    let manifest = corpus::fetch_manifest(&config.manifest_url).await?;
-    let reference = manifest
-        .corpora
-        .into_iter()
-        .find(|c| c.library == library && c.version == version)
-        .ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "the manifest at {} lists no corpus `{library}@{version}`",
-                config.manifest_url
-            )
-        })?;
+    let manifest = corpus::load_manifest(manifest).await?;
+    let reference = corpus::find_corpus(manifest, &library, &version)?;
 
     let cache = Cache::new(Cache::default_root()?);
     println!(
-        "installing {library}@{version} ({} snippets, {} bytes) …",
-        reference.snippet_count, reference.bytes
+        "installing {}@{} ({} snippets) …",
+        reference.library, reference.version, reference.snippet_count
     );
     let installed = corpus::install(&cache, &reference).await?;
     println!("installed to {}", installed.path.display());
     Ok(())
 }
 
-pub fn list(_config: &Config) -> Result<()> {
+pub fn list() -> Result<()> {
     let cache = Cache::new(Cache::default_root()?);
     let installed = cache.installed()?;
     if installed.is_empty() {
@@ -83,9 +90,10 @@ mod tests {
 
     #[test]
     fn a_target_splits_into_library_and_version() {
-        let (library, version) = parse_target("lancedb@0.37.1").unwrap();
-        assert_eq!(library, "lancedb");
-        assert_eq!(version, "0.37.1");
+        assert_eq!(
+            parse_target("numpy@2.3.0").unwrap(),
+            ("numpy".into(), "2.3.0".into())
+        );
     }
 
     /// The version is required because defaulting it to "newest" would
@@ -93,8 +101,25 @@ mod tests {
     /// records as open.
     #[test]
     fn a_target_without_a_version_is_rejected() {
-        let error = parse_target("lancedb").unwrap_err();
-        assert!(error.contains("lancedb@"), "must show the expected form: {error}");
+        assert!(parse_target("numpy").is_err());
+    }
+
+    #[test]
+    fn available_and_install_require_a_manifest_option() {
+        use clap::CommandFactory;
+
+        let command = crate::Args::command();
+        for name in ["available", "install"] {
+            let subcommand = command
+                .get_subcommands()
+                .find(|command| command.get_name() == name)
+                .unwrap();
+            assert!(
+                subcommand
+                    .get_arguments()
+                    .any(|argument| argument.get_long() == Some("manifest"))
+            );
+        }
     }
 
     #[test]

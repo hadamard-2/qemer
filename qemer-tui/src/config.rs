@@ -54,7 +54,6 @@ fn default_k() -> usize {
 /// that their absence is ours to report.
 #[derive(Debug, Default, serde::Deserialize)]
 struct RawConfig {
-    manifest_url: Option<String>,
     #[serde(default)]
     embedding: RawEmbedding,
     #[serde(default)]
@@ -110,7 +109,6 @@ impl Default for RawCompletion {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub manifest_url: String,
     pub embedding: Embedding,
     pub completion: Completion,
     pub retrieval: Retrieval,
@@ -174,14 +172,7 @@ pub fn parse(text: &str, path: &str) -> Result<Config, ConfigError> {
         "choose how many tokens to leave for the answer; the rest of the \
          context is available to the prompt",
     )?;
-    let manifest_url = raw.manifest_url.ok_or_else(|| ConfigError::MissingRequired {
-        key: "manifest_url".to_string(),
-        hint: "the URL of the corpus manifest to install from".to_string(),
-        path: path.to_string(),
-    })?;
-
     Ok(Config {
-        manifest_url,
         embedding: Embedding {
             base_url: raw.embedding.base_url,
             model: raw.embedding.model,
@@ -251,8 +242,6 @@ mod tests {
     /// Every required key present. Individual tests remove one.
     fn complete_toml() -> String {
         r#"
-manifest_url = "https://example/manifest.json"
-
 [completion]
 context_tokens = 4096
 max_completion_tokens = 512
@@ -263,7 +252,6 @@ max_completion_tokens = 512
     #[test]
     fn a_complete_config_parses() {
         let config = parse(&complete_toml(), "/tmp/config.toml").unwrap();
-        assert_eq!(config.manifest_url, "https://example/manifest.json");
         assert_eq!(config.completion.context_tokens, 4096);
         assert_eq!(config.completion.max_completion_tokens, 512);
     }
@@ -308,16 +296,6 @@ max_completion_tokens = 512
         let text = complete_toml().replace("max_completion_tokens = 512\n", "");
         let message = parse(&text, "/tmp/config.toml").unwrap_err().to_string();
         assert!(message.contains("max_completion_tokens"), "{message}");
-    }
-
-    #[test]
-    fn a_missing_manifest_url_names_that_key() {
-        let text = complete_toml().replace(
-            "manifest_url = \"https://example/manifest.json\"\n",
-            "",
-        );
-        let message = parse(&text, "/tmp/config.toml").unwrap_err().to_string();
-        assert!(message.contains("manifest_url"), "{message}");
     }
 
     /// No number is proposed for either required value, anywhere.

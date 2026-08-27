@@ -11,8 +11,12 @@ use color_eyre::Result;
 use qemer_core::Cache;
 
 #[derive(Debug, clap::Parser)]
-#[command(name = "qemer", about = "Offline coding help grounded in documentation")]
-struct Args {
+#[command(
+    name = "qemer",
+    about = "Offline coding help grounded in documentation",
+    version
+)]
+pub(crate) struct Args {
     #[command(subcommand)]
     command: Option<cli::Command>,
 }
@@ -23,14 +27,17 @@ async fn main() -> Result<()> {
     // Parsed before the config is read, so `--help` and `--version` work on a
     // machine that has never been configured.
     let args = Args::parse();
-    let config = config::load()?;
 
     match args.command {
-        Some(cli::Command::Install { target }) => return cli::install(&config, &target).await,
-        Some(cli::Command::List) => return cli::list(&config),
+        Some(cli::Command::Available { manifest }) => return cli::available(&manifest).await,
+        Some(cli::Command::Install { target, manifest }) => {
+            return cli::install(&target, &manifest).await;
+        }
+        Some(cli::Command::List) => return cli::list(),
         None => {}
     }
 
+    let config = config::load()?;
     let cache = Cache::new(Cache::default_root()?);
     let corpora = cache.installed()?;
 
