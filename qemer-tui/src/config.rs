@@ -11,7 +11,12 @@
 //! rather than serde's. That message is the entire experience of a first
 //! run, which is worth forty lines of plumbing.
 
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+use tempfile::NamedTempFile;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -27,6 +32,12 @@ pub enum ConfigError {
         hint: String,
         path: String,
     },
+    #[error("{key} must be greater than zero")]
+    Zero { key: String },
+    #[error("max_completion_tokens must not exceed context_tokens")]
+    CompletionLimitExceedsContext,
+    #[error("config file {path} could not be written: {reason}")]
+    Unwritable { path: String, reason: String },
     #[error("no home directory available, so the config file could not be located")]
     NoHome,
 }
@@ -107,21 +118,29 @@ impl Default for RawCompletion {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Config {
     pub embedding: Embedding,
     pub completion: Completion,
     pub retrieval: Retrieval,
 }
 
-#[derive(Debug, Clone)]
+/// Values collected by the configuration wizard before they are validated.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConfigDraft {
+    pub embedding: Embedding,
+    pub completion: Completion,
+    pub retrieval: Retrieval,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Embedding {
     pub base_url: String,
     pub model: String,
     pub dim: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Completion {
     pub base_url: String,
     pub model: String,
@@ -129,7 +148,7 @@ pub struct Completion {
     pub max_completion_tokens: usize,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Retrieval {
     #[serde(default = "default_k")]
     pub k: usize,
@@ -172,7 +191,7 @@ pub fn parse(text: &str, path: &str) -> Result<Config, ConfigError> {
         "choose how many tokens to leave for the answer; the rest of the \
          context is available to the prompt",
     )?;
-    Ok(Config {
+    validate_draft(ConfigDraft {
         embedding: Embedding {
             base_url: raw.embedding.base_url,
             model: raw.embedding.model,
@@ -185,6 +204,61 @@ pub fn parse(text: &str, path: &str) -> Result<Config, ConfigError> {
             max_completion_tokens,
         },
         retrieval: raw.retrieval,
+    })
+}
+
+/// The built-in settings used for non-model-specific fields by a first run.
+/// The token limits intentionally remain zero until the user supplies them.
+pub fn default_draft() -> ConfigDraft {
+    ConfigDraft {
+        embedding: Embedding {
+            base_url: default_embedding_url(),
+            model: default_embedding_model(),
+            dim: default_embedding_dim(),
+        },
+        completion: Completion {
+            base_url: default_completion_url(),
+            model: default_completion_model(),
+            context_tokens: 0,
+            max_completion_tokens: 0,
+        },
+        retrieval: Retrieval::default(),
+    }
+}
+
+impl From<Config> for ConfigDraft {
+    fn from(config: Config) -> Self {
+        Self {
+            embedding: config.embedding,
+            completion: config.completion,
+            retrieval: config.retrieval,
+        }
+    }
+}
+
+/// Reject configurations that would make a request nonsensical before the
+/// values are handed to the retrieval or generation crates.
+pub fn validate_draft(draft: ConfigDraft) -> Result<Config, ConfigError> {
+    let nonzero = |value: usize, key: &str| {
+        (value != 0).then_some(()).ok_or_else(|| ConfigError::Zero {
+            key: key.to_string(),
+        })
+    };
+    nonzero(draft.embedding.dim, "embedding.dim")?;
+    nonzero(draft.completion.context_tokens, "completion.context_tokens")?;
+    nonzero(
+        draft.completion.max_completion_tokens,
+        "completion.max_completion_tokens",
+    )?;
+    nonzero(draft.retrieval.k, "retrieval.k")?;
+    if draft.completion.max_completion_tokens > draft.completion.context_tokens {
+        return Err(ConfigError::CompletionLimitExceedsContext);
+    }
+
+    Ok(Config {
+        embedding: draft.embedding,
+        completion: draft.completion,
+        retrieval: draft.retrieval,
     })
 }
 
@@ -201,6 +275,12 @@ pub fn resolve_path(override_var: Option<String>) -> Result<PathBuf, ConfigError
 
 pub fn load() -> Result<Config, ConfigError> {
     let path = resolve_path(std::env::var("QEMER_CONFIG").ok())?;
+    load_path(&path)
+}
+
+/// Load a known path so the wizard can preserve the error users would see on
+/// normal startup instead of overwriting an unreadable or malformed file.
+pub fn load_path(path: &Path) -> Result<Config, ConfigError> {
     let shown = path.display().to_string();
     if !path.exists() {
         return Err(ConfigError::Missing { path: shown });
@@ -210,6 +290,39 @@ pub fn load() -> Result<Config, ConfigError> {
         reason: e.to_string(),
     })?;
     parse(&text, &shown)
+}
+
+/// Atomically replace a configuration file only after its complete TOML has
+/// been written to a sibling temporary file.
+pub fn write(path: &Path, config: &Config) -> Result<(), ConfigError> {
+    let shown = path.display().to_string();
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| ConfigError::Unwritable {
+        path: shown.clone(),
+        reason: error.to_string(),
+    })?;
+
+    let mut temporary = NamedTempFile::new_in(parent).map_err(|error| ConfigError::Unwritable {
+        path: shown.clone(),
+        reason: error.to_string(),
+    })?;
+    let toml = toml::to_string(config).map_err(|error| ConfigError::Unwritable {
+        path: shown.clone(),
+        reason: error.to_string(),
+    })?;
+    temporary
+        .write_all(toml.as_bytes())
+        .map_err(|error| ConfigError::Unwritable {
+            path: shown.clone(),
+            reason: error.to_string(),
+        })?;
+    temporary
+        .persist(path)
+        .map_err(|error| ConfigError::Unwritable {
+            path: shown,
+            reason: error.error.to_string(),
+        })?;
+    Ok(())
 }
 
 impl Config {
@@ -239,6 +352,23 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn valid_draft() -> ConfigDraft {
+        ConfigDraft {
+            embedding: Embedding {
+                base_url: "http://embed.example.test:8080".into(),
+                model: "embed-model".into(),
+                dim: 768,
+            },
+            completion: Completion {
+                base_url: "http://complete.example.test:8081".into(),
+                model: "completion-model".into(),
+                context_tokens: 4096,
+                max_completion_tokens: 512,
+            },
+            retrieval: Retrieval { k: 5 },
+        }
+    }
+
     /// Every required key present. Individual tests remove one.
     fn complete_toml() -> String {
         r#"
@@ -254,6 +384,83 @@ max_completion_tokens = 512
         let config = parse(&complete_toml(), "/tmp/config.toml").unwrap();
         assert_eq!(config.completion.context_tokens, 4096);
         assert_eq!(config.completion.max_completion_tokens, 512);
+    }
+
+    #[test]
+    fn a_valid_draft_produces_config() {
+        let config = validate_draft(valid_draft()).unwrap();
+        assert_eq!(config.embedding.model, "embed-model");
+        assert_eq!(config.completion.context_tokens, 4096);
+    }
+
+    #[test]
+    fn a_zero_embedding_dimension_is_rejected() {
+        let mut draft = valid_draft();
+        draft.embedding.dim = 0;
+        assert!(validate_draft(draft).is_err());
+    }
+
+    #[test]
+    fn a_zero_context_length_is_rejected() {
+        let mut draft = valid_draft();
+        draft.completion.context_tokens = 0;
+        assert!(validate_draft(draft).is_err());
+    }
+
+    #[test]
+    fn a_zero_completion_limit_is_rejected() {
+        let mut draft = valid_draft();
+        draft.completion.max_completion_tokens = 0;
+        assert!(validate_draft(draft).is_err());
+    }
+
+    #[test]
+    fn a_zero_retrieval_count_is_rejected() {
+        let mut draft = valid_draft();
+        draft.retrieval.k = 0;
+        assert!(validate_draft(draft).is_err());
+    }
+
+    #[test]
+    fn a_completion_limit_larger_than_context_is_rejected() {
+        let mut draft = valid_draft();
+        draft.completion.max_completion_tokens = draft.completion.context_tokens + 1;
+        assert!(validate_draft(draft).is_err());
+    }
+
+    #[test]
+    fn write_replaces_the_config_with_parseable_toml() {
+        let root = std::env::temp_dir().join(format!(
+            "qemer-config-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let path = root.join("qemer/config.toml");
+        let config = validate_draft(valid_draft()).unwrap();
+
+        write(&path, &config).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let reparsed = parse(&text, &path.display().to_string()).unwrap();
+        assert_eq!(reparsed.embedding.base_url, config.embedding.base_url);
+        assert_eq!(reparsed.embedding.model, config.embedding.model);
+        assert_eq!(reparsed.embedding.dim, config.embedding.dim);
+        assert_eq!(reparsed.completion.base_url, config.completion.base_url);
+        assert_eq!(reparsed.completion.model, config.completion.model);
+        assert_eq!(
+            reparsed.completion.context_tokens,
+            config.completion.context_tokens
+        );
+        assert_eq!(
+            reparsed.completion.max_completion_tokens,
+            config.completion.max_completion_tokens
+        );
+        assert_eq!(reparsed.retrieval.k, config.retrieval.k);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -280,7 +487,10 @@ max_completion_tokens = 512
         let text = complete_toml().replace("context_tokens = 4096\n", "");
         let error = parse(&text, "/home/u/.config/qemer/config.toml").unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("context_tokens"), "must name the key: {message}");
+        assert!(
+            message.contains("context_tokens"),
+            "must name the key: {message}"
+        );
         assert!(
             message.contains("llama-server"),
             "must say where to read the value: {message}"
@@ -341,10 +551,7 @@ max_completion_tokens = 512
     fn the_clients_receive_their_own_endpoints() {
         let text = format!(
             "{}\n[embedding]\nbase_url = \"http://e:1\"\n",
-            complete_toml().replace(
-                "[completion]",
-                "[completion]\nbase_url = \"http://c:2\""
-            )
+            complete_toml().replace("[completion]", "[completion]\nbase_url = \"http://c:2\"")
         );
         let config = parse(&text, "/tmp/config.toml").unwrap();
         assert_eq!(config.embed_client().base_url, "http://e:1");

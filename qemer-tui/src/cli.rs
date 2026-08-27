@@ -5,6 +5,8 @@ use qemer_core::{Cache, corpus};
 
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
+    /// Create or edit Qemer's configuration interactively.
+    Config,
     /// Install a corpus, given as `library@version`.
     Install {
         /// For example `lancedb@0.37.1`. The version is required.

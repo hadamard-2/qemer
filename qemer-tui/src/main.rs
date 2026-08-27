@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod config_wizard;
 mod query;
 mod view;
 
@@ -29,6 +30,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     match args.command {
+        Some(cli::Command::Config) => return config_wizard::run(),
         Some(cli::Command::Available { manifest }) => return cli::available(&manifest).await,
         Some(cli::Command::Install { target, manifest }) => {
             return cli::install(&target, &manifest).await;
