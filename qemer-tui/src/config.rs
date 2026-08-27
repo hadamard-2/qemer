@@ -296,7 +296,7 @@ pub fn load_path(path: &Path) -> Result<Config, ConfigError> {
 /// been written to a sibling temporary file.
 pub fn write(path: &Path, config: &Config) -> Result<(), ConfigError> {
     let shown = path.display().to_string();
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = write_parent(path);
     std::fs::create_dir_all(parent).map_err(|error| ConfigError::Unwritable {
         path: shown.clone(),
         reason: error.to_string(),
@@ -323,6 +323,12 @@ pub fn write(path: &Path, config: &Config) -> Result<(), ConfigError> {
             reason: error.error.to_string(),
         })?;
     Ok(())
+}
+
+fn write_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
 }
 
 impl Config {
@@ -461,6 +467,42 @@ max_completion_tokens = 512
         assert_eq!(reparsed.retrieval.k, config.retrieval.k);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_filename_only_config_path_writes_and_reads() {
+        struct RestoreWorkingDirectory(std::path::PathBuf);
+
+        impl Drop for RestoreWorkingDirectory {
+            fn drop(&mut self) {
+                std::env::set_current_dir(&self.0).unwrap();
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let restore = RestoreWorkingDirectory(std::env::current_dir().unwrap());
+        std::env::set_current_dir(directory.path()).unwrap();
+
+        let config = validate_draft(valid_draft()).unwrap();
+        let path = std::path::Path::new("config.toml");
+        write(path, &config).unwrap();
+        let loaded = load_path(path).unwrap();
+
+        assert_eq!(loaded.embedding.base_url, config.embedding.base_url);
+        assert_eq!(loaded.completion.model, config.completion.model);
+        assert_eq!(
+            loaded.completion.context_tokens,
+            config.completion.context_tokens
+        );
+        drop(restore);
+    }
+
+    #[test]
+    fn a_filename_only_path_uses_the_current_directory_for_atomic_write() {
+        assert_eq!(
+            write_parent(std::path::Path::new("config.toml")),
+            std::path::Path::new(".")
+        );
     }
 
     #[test]
