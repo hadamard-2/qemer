@@ -32,8 +32,15 @@ pub enum CoreError {
     },
     #[error("manifest at {url} could not be read: {reason}")]
     Manifest { url: String, reason: String },
-    #[error("corpus download from {url} failed: {reason}")]
-    Download { url: String, reason: String },
+    #[error("could not read local corpus source {path}: {reason}")]
+    FileRead {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+    #[error("HTTPS request to {url} failed: {reason}")]
+    Https { url: String, reason: String },
+    #[error("corpus artifact size mismatch: expected {expected} bytes, got {actual} bytes")]
+    SizeMismatch { expected: u64, actual: u64 },
     #[error("corpus download failed checksum: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
     #[error("embedding request failed: {0}")]

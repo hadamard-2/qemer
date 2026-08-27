@@ -67,6 +67,36 @@ impl ManifestSource {
             Err(e) => Err(manifest_error(artifact, e.to_string())),
         }
     }
+
+    async fn read_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::File(path) => read_file(path),
+            Self::Https(url) => read_https(url).await,
+        }
+    }
+}
+
+impl ArtifactSource {
+    fn parse(source: &str) -> Result<Self> {
+        match url::Url::parse(source) {
+            Ok(url) if url.scheme() == "https" && url.has_host() => Ok(Self::Https(url)),
+            Ok(url) => Err(manifest_error(
+                source,
+                format!("unsupported artifact source scheme `{}`", url.scheme()),
+            )),
+            Err(url::ParseError::RelativeUrlWithoutBase) => std::path::absolute(source)
+                .map(Self::File)
+                .map_err(|e| manifest_error(source, e.to_string())),
+            Err(e) => Err(manifest_error(source, e.to_string())),
+        }
+    }
+
+    async fn read_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::File(path) => read_file(path),
+            Self::Https(url) => read_https(url).await,
+        }
+    }
 }
 
 impl std::fmt::Display for ArtifactSource {
@@ -83,6 +113,29 @@ fn manifest_error(source: &str, reason: impl Into<String>) -> CoreError {
         url: source.into(),
         reason: reason.into(),
     }
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|e| CoreError::FileRead {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })
+}
+
+async fn read_https(url: &url::Url) -> Result<Vec<u8>> {
+    let request_failed = |e: reqwest::Error| CoreError::Https {
+        url: url.to_string(),
+        reason: e.to_string(),
+    };
+    reqwest::get(url.as_str())
+        .await
+        .map_err(request_failed)?
+        .error_for_status()
+        .map_err(request_failed)?
+        .bytes()
+        .await
+        .map_err(request_failed)
+        .map(|bytes| bytes.to_vec())
 }
 
 /// Fetched from a known URL; lists what is available to download.
@@ -144,6 +197,7 @@ pub fn find_corpus(manifest: Manifest, library: &str, version: &str) -> Result<C
         .ok_or_else(|| CoreError::CorpusMissing(format!("{library}@{version}")))
 }
 
+#[cfg(test)]
 fn resolve_manifest_artifacts(source: &ManifestSource, manifest: &mut Manifest) -> Result<()> {
     for reference in &mut manifest.corpora {
         reference.url = source.resolve_artifact(&reference.url)?.to_string();
@@ -151,25 +205,25 @@ fn resolve_manifest_artifacts(source: &ManifestSource, manifest: &mut Manifest) 
     Ok(())
 }
 
+pub async fn load_manifest(source: &str) -> Result<Manifest> {
+    let source = ManifestSource::parse(source)?;
+    let bytes = source.read_bytes().await?;
+    let mut manifest = parse_manifest(&bytes)?;
+    for reference in &mut manifest.corpora {
+        reference.url = source.resolve_artifact(&reference.url)?.to_string();
+    }
+    Ok(manifest)
+}
+
 pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
     let source = ManifestSource::parse(url)?;
-    let ManifestSource::Https(manifest_url) = &source else {
-        return Err(manifest_error(url, "fetch_manifest requires an HTTPS source"));
+    let ManifestSource::Https(_) = source else {
+        return Err(manifest_error(
+            url,
+            "fetch_manifest requires an HTTPS source",
+        ));
     };
-    let bytes = reqwest::get(manifest_url.as_str())
-        .await
-        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?
-        .error_for_status()
-        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?
-        .bytes()
-        .await
-        .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?;
-    let mut manifest = parse_manifest(&bytes).map_err(|e| CoreError::Manifest {
-        url: url.into(),
-        reason: e.to_string(),
-    })?;
-    resolve_manifest_artifacts(&source, &mut manifest)?;
-    Ok(manifest)
+    load_manifest(url).await
 }
 
 /// Read Parquet rows and write them into a new LanceDB table with its FTS
@@ -215,18 +269,13 @@ pub async fn install(cache: &crate::Cache, reference: &CorpusRef) -> Result<Corp
     }
     std::fs::create_dir_all(&cache.root)?;
 
-    let fetch_failed = |e: reqwest::Error| CoreError::Download {
-        url: reference.url.clone(),
-        reason: e.to_string(),
-    };
-    let bytes = reqwest::get(&reference.url)
-        .await
-        .map_err(fetch_failed)?
-        .error_for_status()
-        .map_err(fetch_failed)?
-        .bytes()
-        .await
-        .map_err(fetch_failed)?;
+    let bytes = ArtifactSource::parse(&reference.url)?.read_bytes().await?;
+    if bytes.len() as u64 != reference.bytes {
+        return Err(CoreError::SizeMismatch {
+            expected: reference.bytes,
+            actual: bytes.len() as u64,
+        });
+    }
     verify_sha256(&bytes, &reference.sha256)?;
 
     // Staged inside the cache root so the final rename stays on one
