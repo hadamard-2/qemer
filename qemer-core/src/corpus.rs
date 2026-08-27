@@ -144,8 +144,19 @@ pub fn find_corpus(manifest: Manifest, library: &str, version: &str) -> Result<C
         .ok_or_else(|| CoreError::CorpusMissing(format!("{library}@{version}")))
 }
 
+fn resolve_manifest_artifacts(source: &ManifestSource, manifest: &mut Manifest) -> Result<()> {
+    for reference in &mut manifest.corpora {
+        reference.url = source.resolve_artifact(&reference.url)?.to_string();
+    }
+    Ok(())
+}
+
 pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
-    let bytes = reqwest::get(url)
+    let source = ManifestSource::parse(url)?;
+    let ManifestSource::Https(manifest_url) = &source else {
+        return Err(manifest_error(url, "fetch_manifest requires an HTTPS source"));
+    };
+    let bytes = reqwest::get(manifest_url.as_str())
         .await
         .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?
         .error_for_status()
@@ -153,10 +164,12 @@ pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
         .bytes()
         .await
         .map_err(|e| CoreError::Manifest { url: url.into(), reason: e.to_string() })?;
-    parse_manifest(&bytes).map_err(|e| CoreError::Manifest {
+    let mut manifest = parse_manifest(&bytes).map_err(|e| CoreError::Manifest {
         url: url.into(),
         reason: e.to_string(),
-    })
+    })?;
+    resolve_manifest_artifacts(&source, &mut manifest)?;
+    Ok(manifest)
 }
 
 /// Read Parquet rows and write them into a new LanceDB table with its FTS
@@ -302,6 +315,22 @@ mod tests {
         let resolved = source.resolve_artifact("numpy-2.3.0.tar.zst").unwrap();
         assert_eq!(
             resolved.to_string(),
+            "https://host.example/releases/numpy-2.3.0.tar.zst"
+        );
+    }
+
+    #[test]
+    fn a_manifest_artifact_is_normalized_before_installation() {
+        let source = ManifestSource::parse("https://host.example/releases/manifest.json").unwrap();
+        let mut manifest = parse_manifest(
+            br#"{"corpora":[{"library":"numpy","version":"2.3.0","url":"numpy-2.3.0.tar.zst","sha256":"a","bytes":1,"embedding_model":"nomic","embedding_dim":768,"snippet_count":1}]}"#,
+        )
+        .unwrap();
+
+        resolve_manifest_artifacts(&source, &mut manifest).unwrap();
+
+        assert_eq!(
+            manifest.corpora[0].url,
             "https://host.example/releases/numpy-2.3.0.tar.zst"
         );
     }

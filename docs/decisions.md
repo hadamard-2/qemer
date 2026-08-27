@@ -62,7 +62,7 @@ Fusion is by reciprocal rank, not by combining scores. BM25 scores are unbounded
 
 The only thing this repository and `qemer-ingest` share. Nothing beyond this should be assumed on either side.
 
-A manifest at a known URL lists what is available:
+A manifest from an explicit local path or HTTPS URL lists what is available:
 
 ```json
 {
