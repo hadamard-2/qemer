@@ -43,8 +43,10 @@ pub enum CoreError {
     SizeMismatch { expected: u64, actual: u64 },
     #[error("corpus download failed checksum: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
-    #[error("embedding request failed: {0}")]
-    Embed(String),
+    #[error("embedding server at {url} is unreachable: {reason}")]
+    EmbedUnreachable { url: String, reason: String },
+    #[error("embedding response failed: {0}")]
+    EmbedResponse(String),
     #[error(transparent)]
     Db(#[from] lancedb::Error),
     #[error(transparent)]

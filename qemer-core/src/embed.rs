@@ -26,14 +26,14 @@ struct EmbeddingDatum {
 /// Parse an OpenAI-shaped embeddings response and check its width.
 pub fn parse_embedding(body: &[u8], expected_dim: usize) -> Result<Vec<f32>> {
     let parsed: EmbeddingResponse = serde_json::from_slice(body)
-        .map_err(|e| CoreError::Embed(format!("unexpected response body: {e}")))?;
+        .map_err(|e| CoreError::EmbedResponse(format!("unexpected response body: {e}")))?;
     let first = parsed
         .data
         .into_iter()
         .next()
-        .ok_or_else(|| CoreError::Embed("response contained no embeddings".into()))?;
+        .ok_or_else(|| CoreError::EmbedResponse("response contained no embeddings".into()))?;
     if first.embedding.len() != expected_dim {
-        return Err(CoreError::Embed(format!(
+        return Err(CoreError::EmbedResponse(format!(
             "expected {expected_dim} dimensions, received {}",
             first.embedding.len()
         )));
@@ -65,15 +65,21 @@ impl EmbedClient {
             .json(&serde_json::json!({ "input": text, "model": self.model }))
             .send()
             .await
-            .map_err(|e| {
-                // Names the URL and what was attempted. What the user should
-                // start is the caller's to say, not this crate's.
-                CoreError::Embed(format!("no embedding server reachable at {url}: {e}"))
+            .map_err(|e| CoreError::EmbedUnreachable {
+                url: url.clone(),
+                reason: e.to_string(),
             })?;
-        let body = response
-            .bytes()
-            .await
-            .map_err(|e| CoreError::Embed(e.to_string()))?;
+        if !response.status().is_success() {
+            return Err(CoreError::EmbedResponse(format!(
+                "embedding request to {url} returned HTTP {}",
+                response.status()
+            )));
+        }
+        let body = response.bytes().await.map_err(|e| {
+            CoreError::EmbedResponse(format!(
+                "could not read embedding response body from {url}: {e}"
+            ))
+        })?;
         parse_embedding(&body, self.dim)
     }
 }
@@ -106,18 +112,26 @@ mod tests {
 
     #[test]
     fn a_matching_corpus_passes() {
-        assert!(client().check_corpus(&corpus("nomic-embed-text-v1.5", 768)).is_ok());
+        assert!(
+            client()
+                .check_corpus(&corpus("nomic-embed-text-v1.5", 768))
+                .is_ok()
+        );
     }
 
     #[test]
     fn a_different_model_fails() {
-        let err = client().check_corpus(&corpus("all-MiniLM-L6-v2", 768)).unwrap_err();
+        let err = client()
+            .check_corpus(&corpus("all-MiniLM-L6-v2", 768))
+            .unwrap_err();
         assert!(matches!(err, crate::CoreError::ModelMismatch { .. }));
     }
 
     #[test]
     fn a_different_dimension_fails_even_with_the_same_model_name() {
-        let err = client().check_corpus(&corpus("nomic-embed-text-v1.5", 512)).unwrap_err();
+        let err = client()
+            .check_corpus(&corpus("nomic-embed-text-v1.5", 512))
+            .unwrap_err();
         assert!(matches!(err, crate::CoreError::ModelMismatch { .. }));
     }
 

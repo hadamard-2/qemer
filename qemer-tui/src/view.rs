@@ -27,7 +27,7 @@ fn draw_picker(frame: &mut Frame, app: &App) {
             Line::from(""),
             Line::from("Install one from the command line, then start qemer again:"),
             Line::from(""),
-            Line::from("    qemer install <library>@<version>"),
+            Line::from("    qemer install <library>@<version> --manifest <path-or-https-url>"),
             Line::from(""),
             Line::from("    qemer list    shows what is already installed"),
         ];
@@ -148,7 +148,12 @@ fn draw_query(frame: &mut Frame, app: &App) {
         " Ask — Enter to send, Esc for the corpus list ".to_string()
     };
     let input_block = Block::default().borders(Borders::ALL).title(prompt);
-    frame.render_widget(Paragraph::new(app.input.as_str()).block(input_block), input);
+    let input_text = if app.is_busy() {
+        app.input.clone()
+    } else {
+        format!("{}▌", app.input)
+    };
+    frame.render_widget(Paragraph::new(input_text).block(input_block), input);
 }
 
 fn draw_excerpt(frame: &mut Frame, app: &App) {
@@ -272,7 +277,19 @@ mod tests {
     #[test]
     fn the_empty_picker_names_the_install_command() {
         let screen = rendered(&App::new(vec![]));
-        assert!(screen.contains("qemer install"), "{screen}");
+        assert!(
+            screen.contains("qemer install <library>@<version> --manifest <path-or-https-url>"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn an_editable_query_shows_a_visible_cursor() {
+        let mut app = App::new(vec![a_corpus()]);
+        app.screen = Screen::Query;
+        app.input = "how do I create an array".into();
+        let screen = rendered(&app);
+        assert!(screen.contains("how do I create an array▌"), "{screen}");
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub fn describe_retrieval_failure(error: &CoreError, embedding_url: &str) -> Str
     match error {
         // Only unreachability is worth advice. A mismatch or a missing
         // corpus is already precise, and restarting a server fixes neither.
-        CoreError::Embed(reason) => format!(
+        CoreError::EmbedUnreachable { reason, .. } => format!(
             "Could not reach the embedding server at {embedding_url} ({reason}). \
              Start llama-server with your embedding model on that address, then ask again."
         ),
@@ -112,10 +112,21 @@ mod tests {
 
     #[test]
     fn an_unreachable_embedding_server_names_that_endpoint_and_what_to_start() {
-        let error = CoreError::Embed("connection refused".into());
-        let message = describe_retrieval_failure(&error, EMBEDDING_URL);
-        assert!(message.contains(EMBEDDING_URL), "{message}");
-        assert!(message.contains("llama-server"), "{message}");
+        let error = CoreError::EmbedUnreachable {
+            url: EMBEDDING_URL.into(),
+            reason: "connection refused".into(),
+        };
+        assert!(describe_retrieval_failure(&error, EMBEDDING_URL).contains("Start llama-server"));
+    }
+
+    #[test]
+    fn a_malformed_embedding_response_does_not_offer_server_start_advice() {
+        let message = describe_retrieval_failure(
+            &CoreError::EmbedResponse("invalid JSON".into()),
+            EMBEDDING_URL,
+        );
+        assert!(message.contains("invalid JSON"));
+        assert!(!message.contains("Start llama-server"));
     }
 
     /// The two endpoints fail independently and are configured separately.
@@ -123,7 +134,10 @@ mod tests {
     /// the user to restart the wrong server.
     #[test]
     fn a_retrieval_failure_never_mentions_the_completion_endpoint() {
-        let error = CoreError::Embed("connection refused".into());
+        let error = CoreError::EmbedUnreachable {
+            url: EMBEDDING_URL.into(),
+            reason: "connection refused".into(),
+        };
         let message = describe_retrieval_failure(&error, EMBEDDING_URL);
         assert!(!message.contains(COMPLETION_URL), "{message}");
         assert!(!message.to_lowercase().contains("completion"), "{message}");
