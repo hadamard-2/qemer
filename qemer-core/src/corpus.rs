@@ -76,6 +76,15 @@ impl ManifestSource {
     }
 }
 
+impl std::fmt::Display for ManifestSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Https(url) => write!(f, "{url}"),
+        }
+    }
+}
+
 impl ArtifactSource {
     fn parse(source: &str) -> Result<Self> {
         match url::Url::parse(source) {
@@ -127,7 +136,12 @@ async fn read_https(url: &url::Url) -> Result<Vec<u8>> {
         url: url.to_string(),
         reason: e.to_string(),
     };
-    reqwest::get(url.as_str())
+    reqwest::Client::builder()
+        .https_only(true)
+        .build()
+        .map_err(request_failed)?
+        .get(url.as_str())
+        .send()
         .await
         .map_err(request_failed)?
         .error_for_status()
@@ -138,7 +152,7 @@ async fn read_https(url: &url::Url) -> Result<Vec<u8>> {
         .map(|bytes| bytes.to_vec())
 }
 
-/// Fetched from a known URL; lists what is available to download.
+/// Lists the corpora available from an explicit local or HTTPS source.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     pub corpora: Vec<CorpusRef>,
@@ -165,20 +179,24 @@ pub struct Corpus {
 /// Parse a manifest. Kept separate from fetching so the parsing rules are
 /// testable without a network.
 pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
+    parse_manifest_from(bytes, "<local>")
+}
+
+fn parse_manifest_from(bytes: &[u8], source: &str) -> Result<Manifest> {
     let manifest = serde_json::from_slice(bytes).map_err(|e| CoreError::Manifest {
-        url: "<local>".into(),
+        url: source.into(),
         reason: e.to_string(),
     })?;
-    validate_manifest(&manifest)?;
+    validate_manifest(&manifest, source)?;
     Ok(manifest)
 }
 
-fn validate_manifest(manifest: &Manifest) -> Result<()> {
+fn validate_manifest(manifest: &Manifest, source: &str) -> Result<()> {
     let mut identities = HashSet::new();
     for corpus in &manifest.corpora {
         if !identities.insert((&corpus.library, &corpus.version)) {
             return Err(manifest_error(
-                "<local>",
+                source,
                 format!(
                     "duplicate corpus identity {}@{}",
                     corpus.library, corpus.version
@@ -208,7 +226,7 @@ fn resolve_manifest_artifacts(source: &ManifestSource, manifest: &mut Manifest) 
 pub async fn load_manifest(source: &str) -> Result<Manifest> {
     let source = ManifestSource::parse(source)?;
     let bytes = source.read_bytes().await?;
-    let mut manifest = parse_manifest(&bytes)?;
+    let mut manifest = parse_manifest_from(&bytes, &source.to_string())?;
     for reference in &mut manifest.corpora {
         reference.url = source.resolve_artifact(&reference.url)?.to_string();
     }
@@ -343,6 +361,21 @@ mod tests {
         assert!(parse_manifest(b"not json").is_err());
     }
 
+    #[tokio::test]
+    async fn malformed_manifest_errors_preserve_the_supplied_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("broken-manifest.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let source = path.display().to_string();
+
+        let error = load_manifest(&source).await.unwrap_err();
+
+        assert!(
+            matches!(error, CoreError::Manifest { ref url, .. } if url == &source),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn a_missing_field_is_an_error() {
         assert!(parse_manifest(br#"{"corpora":[{"library":"x"}]}"#).is_err());
@@ -413,6 +446,32 @@ mod tests {
     #[test]
     fn a_non_https_remote_manifest_is_rejected() {
         assert!(ManifestSource::parse("ftp://host.example/manifest.json").is_err());
+    }
+
+    #[tokio::test]
+    async fn https_transport_rejects_a_plain_http_downgrade_destination() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let downgraded = url::Url::parse(&format!("http://{address}/artifact")).unwrap();
+
+        let result = read_https(&downgraded).await;
+
+        assert!(
+            matches!(result, Err(CoreError::Https { ref url, .. }) if url == downgraded.as_str()),
+            "plain HTTP destination was accepted: {result:?}"
+        );
+        server.abort();
     }
 
     const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";

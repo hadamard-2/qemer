@@ -102,7 +102,6 @@ Unresolved. **Ask rather than assume** — each of these has more than one defen
 
 - **Cache eviction.** Nothing decides when a downloaded corpus is removed, or whether that is ever automatic.
 - **Token budget default.** `k = 5` is settled as a retrieval hint, but the budget it feeds is not chosen, and it depends on a context length that must be read from the model rather than assumed.
-- **Failure surface for a missing `llama-server`.** Settled that Qemer says what to start. The two endpoints can be down independently, and what each message says is not written.
 
 ## Specifics to verify before relying on them
 

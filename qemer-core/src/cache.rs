@@ -11,6 +11,16 @@ use std::path::{Path, PathBuf};
 
 pub const META_FILE: &str = "corpus.json";
 
+fn encode_identity_component(component: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(component.len() * 2);
+    for byte in component.bytes() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 pub struct Cache {
     pub root: PathBuf,
 }
@@ -29,7 +39,9 @@ impl Cache {
     }
 
     pub fn dir_for(&self, library: &str, version: &str) -> PathBuf {
-        self.root.join(format!("{library}-{version}"))
+        let library = encode_identity_component(library);
+        let version = encode_identity_component(version);
+        self.root.join(format!("v1-{library}-{version}"))
     }
 
     pub fn write_meta(&self, dir: &Path, reference: &CorpusRef) -> Result<()> {
@@ -91,8 +103,52 @@ mod tests {
         let cache = Cache::new("/tmp/root".into());
         assert_eq!(
             cache.dir_for("lancedb", "0.37.1"),
-            std::path::Path::new("/tmp/root/lancedb-0.37.1")
+            std::path::Path::new("/tmp/root/v1-6c616e63656462-302e33372e31")
         );
+    }
+
+    #[test]
+    fn untrusted_identity_values_cannot_escape_the_cache_root() {
+        let cache = Cache::new("/tmp/qemer-cache".into());
+
+        let dir = cache.dir_for("../../../outside", "../../other");
+
+        assert_eq!(dir.parent(), Some(cache.root.as_path()));
+        assert_eq!(
+            dir.file_name().unwrap(),
+            "v1-2e2e2f2e2e2f2e2e2f6f757473696465-2e2e2f2e2e2f6f74686572"
+        );
+    }
+
+    #[test]
+    fn component_encoding_avoids_delimiter_and_case_folded_collisions() {
+        let cache = Cache::new("/tmp/qemer-cache".into());
+
+        assert_ne!(cache.dir_for("a-b", "c"), cache.dir_for("a", "b-c"));
+        assert_ne!(cache.dir_for("NumPy", "2.3"), cache.dir_for("numpy", "2.3"));
+    }
+
+    #[test]
+    fn component_encoding_is_reversible_for_utf8() {
+        fn decode(encoded: &str) -> String {
+            let bytes = encoded
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| {
+                    let pair = std::str::from_utf8(pair).unwrap();
+                    u8::from_str_radix(pair, 16).unwrap()
+                })
+                .collect::<Vec<_>>();
+            String::from_utf8(bytes).unwrap()
+        }
+
+        let cache = Cache::new("/tmp/qemer-cache".into());
+        let dir = cache.dir_for("NumPy/数组", "2.3-β");
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let (library, version) = name.strip_prefix("v1-").unwrap().split_once('-').unwrap();
+
+        assert_eq!(decode(library), "NumPy/数组");
+        assert_eq!(decode(version), "2.3-β");
     }
 
     #[test]

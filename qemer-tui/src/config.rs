@@ -20,7 +20,7 @@ use tempfile::NamedTempFile;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("no config file at {path}. Create it and set at least the required keys.")]
+    #[error("no config file at {path}. Run `qemer config` to create it.")]
     Missing { path: String },
     #[error("config file {path} could not be read: {reason}")]
     Unreadable { path: String, reason: String },
@@ -285,7 +285,7 @@ pub fn load_path(path: &Path) -> Result<Config, ConfigError> {
     if !path.exists() {
         return Err(ConfigError::Missing { path: shown });
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| ConfigError::Unreadable {
+    let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Unreadable {
         path: shown.clone(),
         reason: e.to_string(),
     })?;
@@ -471,38 +471,40 @@ max_completion_tokens = 512
 
     #[test]
     fn a_filename_only_config_path_writes_and_reads() {
-        struct RestoreWorkingDirectory(std::path::PathBuf);
+        const CHILD_MARKER: &str = "QEMER_FILENAME_CONFIG_TEST_CHILD";
 
-        impl Drop for RestoreWorkingDirectory {
-            fn drop(&mut self) {
-                std::env::set_current_dir(&self.0).unwrap();
-            }
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            let config = validate_draft(valid_draft()).unwrap();
+            let path = std::path::Path::new("config.toml");
+            write(path, &config).unwrap();
+            let loaded = load_path(path).unwrap();
+
+            assert_eq!(loaded.embedding.base_url, config.embedding.base_url);
+            assert_eq!(loaded.completion.model, config.completion.model);
+            assert_eq!(
+                loaded.completion.context_tokens,
+                config.completion.context_tokens
+            );
+            return;
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let restore = RestoreWorkingDirectory(std::env::current_dir().unwrap());
-        std::env::set_current_dir(directory.path()).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("config::tests::a_filename_only_config_path_writes_and_reads")
+            .arg("--nocapture")
+            .current_dir(directory.path())
+            .env(CHILD_MARKER, "1")
+            .output()
+            .unwrap();
 
-        let config = validate_draft(valid_draft()).unwrap();
-        let path = std::path::Path::new("config.toml");
-        write(path, &config).unwrap();
-        let loaded = load_path(path).unwrap();
-
-        assert_eq!(loaded.embedding.base_url, config.embedding.base_url);
-        assert_eq!(loaded.completion.model, config.completion.model);
-        assert_eq!(
-            loaded.completion.context_tokens,
-            config.completion.context_tokens
+        assert!(
+            output.status.success(),
+            "child stdout:\n{}\nchild stderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
-        drop(restore);
-    }
-
-    #[test]
-    fn a_filename_only_path_uses_the_current_directory_for_atomic_write() {
-        assert_eq!(
-            write_parent(std::path::Path::new("config.toml")),
-            std::path::Path::new(".")
-        );
+        assert!(directory.path().join("config.toml").is_file());
     }
 
     #[test]
@@ -569,6 +571,16 @@ max_completion_tokens = 512
             .unwrap_err()
             .to_string();
         assert!(message.contains("/tmp/config.toml"), "{message}");
+    }
+
+    #[test]
+    fn a_missing_config_directs_the_user_to_the_config_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.toml");
+
+        let message = load_path(&path).unwrap_err().to_string();
+
+        assert!(message.contains("qemer config"), "{message}");
     }
 
     #[test]
