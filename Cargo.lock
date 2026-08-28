@@ -4990,14 +4990,20 @@ dependencies = [
  "dialoguer",
  "directories",
  "futures",
+ "lancedb",
+ "parquet",
  "qemer-answer",
  "qemer-core",
  "ratatui",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml",
+ "zstd",
 ]
 
 [[package]]
