@@ -68,6 +68,13 @@ impl Cache {
             if !path.is_dir() {
                 continue;
             }
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("v1-"))
+            {
+                continue;
+            }
             if let Ok(reference) = Self::read_meta(&path) {
                 found.push(Corpus { reference, path });
             }
@@ -187,5 +194,23 @@ mod tests {
         let found = cache.installed().unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].reference.library, "lancedb");
+    }
+
+    #[test]
+    fn installed_ignores_legacy_layout_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::new(tmp.path().to_path_buf());
+
+        let legacy_dir = tmp.path().join("lancedb-0.37.1");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        cache.write_meta(&legacy_dir, &a_ref()).unwrap();
+
+        let v1_dir = cache.dir_for("lancedb", "0.37.1");
+        std::fs::create_dir_all(&v1_dir).unwrap();
+        cache.write_meta(&v1_dir, &a_ref()).unwrap();
+
+        let found = cache.installed().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, v1_dir);
     }
 }
