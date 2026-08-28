@@ -15,7 +15,7 @@
 use futures::{Stream, StreamExt};
 use qemer_answer::{AnswerError, AnswerEvent, Generator};
 use qemer_core::embed::EmbedClient;
-use qemer_core::{Corpus, CoreError, Snippet, search};
+use qemer_core::{CoreError, Corpus, Snippet, search};
 
 /// What the interface learns as a query progresses.
 #[derive(Debug, Clone)]

@@ -32,9 +32,8 @@ impl Cache {
 
     /// `~/.cache/qemer/corpora` on Linux, the platform equivalent elsewhere.
     pub fn default_root() -> Result<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "", "qemer").ok_or_else(|| {
-            CoreError::Io(std::io::Error::other("no home directory available"))
-        })?;
+        let dirs = directories::ProjectDirs::from("", "", "qemer")
+            .ok_or_else(|| CoreError::Io(std::io::Error::other("no home directory available")))?;
         Ok(dirs.cache_dir().join("corpora"))
     }
 

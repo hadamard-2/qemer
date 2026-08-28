@@ -283,7 +283,10 @@ pub async fn install(cache: &crate::Cache, reference: &CorpusRef) -> Result<Corp
     let final_dir = cache.dir_for(&reference.library, &reference.version);
     if final_dir.exists() {
         let existing = crate::Cache::read_meta(&final_dir)?;
-        return Ok(Corpus { reference: existing, path: final_dir });
+        return Ok(Corpus {
+            reference: existing,
+            path: final_dir,
+        });
     }
     std::fs::create_dir_all(&cache.root)?;
 
@@ -308,7 +311,10 @@ pub async fn install(cache: &crate::Cache, reference: &CorpusRef) -> Result<Corp
 
     std::fs::rename(&db_dir, &final_dir)?;
     cache.write_meta(&final_dir, reference)?;
-    Ok(Corpus { reference: reference.clone(), path: final_dir })
+    Ok(Corpus {
+        reference: reference.clone(),
+        path: final_dir,
+    })
 }
 
 /// Verify a downloaded tarball against the manifest's digest.

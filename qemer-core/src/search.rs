@@ -31,19 +31,18 @@ pub struct Snippet {
 fn snippet_ids(batches: &[RecordBatch]) -> Result<Vec<String>> {
     let mut ids = Vec::new();
     for b in batches {
-        let col = b
-            .column_by_name(COL_SNIPPET_ID)
-            .ok_or_else(|| CoreError::Db(lancedb::Error::Other {
+        let col = b.column_by_name(COL_SNIPPET_ID).ok_or_else(|| {
+            CoreError::Db(lancedb::Error::Other {
                 message: "result batch has no snippet_id column".into(),
                 source: None,
-            }))?;
-        let col = col
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| CoreError::Db(lancedb::Error::Other {
+            })
+        })?;
+        let col = col.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+            CoreError::Db(lancedb::Error::Other {
                 message: "snippet_id is not a string column".into(),
                 source: None,
-            }))?;
+            })
+        })?;
         for i in 0..col.len() {
             ids.push(col.value(i).to_string());
         }
@@ -58,11 +57,18 @@ pub async fn bm25_ranking(
     limit: usize,
 ) -> Result<Vec<String>> {
     let fts = lance_index::scalar::FullTextSearchQuery::new(query.into())
-        .with_columns(&FTS_COLUMNS.iter().map(|c| c.to_string()).collect::<Vec<_>>())
-        .map_err(|e| CoreError::Db(lancedb::Error::Other {
-            message: e.to_string(),
-            source: None,
-        }))?;
+        .with_columns(
+            &FTS_COLUMNS
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| {
+            CoreError::Db(lancedb::Error::Other {
+                message: e.to_string(),
+                source: None,
+            })
+        })?;
     let batches: Vec<_> = table
         .query()
         .full_text_search(fts)
