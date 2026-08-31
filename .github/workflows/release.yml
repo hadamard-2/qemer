@@ -77,14 +77,13 @@ jobs:
             sha256sum "${target}.tar.gz" > "${target}.tar.gz.sha256"
           )
 
-      - name: Create the draft release
+      - name: Create the release
         env:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
           gh release create "$TAG" \
             "dist/qemer-${TAG}-x86_64-unknown-linux-gnu.tar.gz" \
             "dist/qemer-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256" \
-            --draft \
             --generate-notes \
             --target "$GITHUB_SHA" \
             --title "$TAG"
