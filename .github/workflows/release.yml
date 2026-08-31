@@ -1,0 +1,82 @@
+name: Create binary release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example, v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify the release tag and package version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --force --tags origin
+          git ls-remote --exit-code --refs origin "refs/tags/${TAG}" >/dev/null || {
+            echo "The required tag ${TAG} does not exist on origin." >&2
+            exit 1
+          }
+          tag_commit="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")" || {
+            echo "The remote tag ${TAG} could not be resolved locally." >&2
+            exit 1
+          }
+          git checkout --detach "$tag_commit"
+
+          package_version="$(awk -F '"' '/^version = / { print $2; exit }' qemer-tui/Cargo.toml)"
+          if [ -z "$package_version" ] || [ "$TAG" != "v${package_version}" ]; then
+            echo "Expected tag v${package_version}, got ${TAG}." >&2
+            exit 1
+          fi
+
+      - name: Install Rust 1.91
+        run: rustup toolchain install 1.91.0 --profile minimal
+
+      - name: Test the workspace
+        run: cargo +1.91.0 test --workspace --locked
+
+      - name: Build the Linux binary
+        run: cargo +1.91.0 build --package qemer-tui --bin qemer --release --locked
+
+      - name: Package the release assets
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          target="qemer-${TAG}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${target}"
+          cp target/release/qemer "dist/${target}/qemer"
+          tar -C dist -czf "dist/${target}.tar.gz" "$target"
+          (
+            cd dist
+            sha256sum "${target}.tar.gz" > "${target}.tar.gz.sha256"
+          )
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "A release for ${TAG} already exists." >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            "dist/qemer-${TAG}-x86_64-unknown-linux-gnu.tar.gz" \
+            "dist/qemer-${TAG}-x86_64-unknown-linux-gnu.tar.gz.sha256" \
+            --draft \
+            --generate-notes \
+            --title "$TAG" \
+            --verify-tag
